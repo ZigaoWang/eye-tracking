@@ -46,6 +46,7 @@ ATTENTION_ALERT_DURATION = 3.0  # How long to show the flashing alert (seconds)
 FOCUS_REWARD_TIME_SEC = 10.0  # Time of continuous focus to trigger reward
 FOCUS_REWARD_COOLDOWN_SEC = 30.0  # Minimum time between focus rewards
 FOCUS_REWARD_DISPLAY_DURATION = 3.0  # How long to show the reward screen (seconds)
+BRIEF_DISTRACTION_THRESHOLD_SEC = 2.0  # Allow distractions shorter than this without resetting focus
 
 # --- Pupil Detection Function ---
 def find_pupil(eye_roi_gray):
@@ -241,6 +242,14 @@ def main():
     last_focus_reward_time = 0.0  # Track when the last focus reward was given
     focus_reward_active = False   # Is reward animation currently active
     focus_reward_start_time = 0.0 # When was the current reward started
+    
+    # Session tracking
+    session_start_time = 0.0      # When the current session started
+    total_focus_time = 0.0        # Total time spent focused in session
+    total_distraction_time = 0.0  # Total time spent distracted in session
+    distraction_start_time = 0.0  # When the current distraction started
+    brief_distraction_active = False  # Flag for brief distractions
+    show_session_stats = False    # Flag to show/hide session stats
     # -------------------------
 
     # --- Initialize webcam or create simulated input ---
@@ -287,6 +296,7 @@ def main():
     print(" S: Start Virtual Cursor Control (after calibration)")
     print(" D: Stop Control / Return to Detection Mode")
     print(" A: Start ADHD Attention Assistant Mode")
+    print(" T: Toggle Focus Session Statistics Display")
     print(" SPACE: Confirm gaze during calibration")
     print(" Q: Quit")
     print("----------------")
@@ -297,8 +307,10 @@ def main():
     print("  This mode helps maintain focus by monitoring your attention.")
     print("  When you look away, move too close to edges, or leave view,")
     print("  it will play a sound alert and display a reminder message.")
+    print("  Brief distractions under 2 seconds are tolerated.")
+    print("  You earn rewards after 10 seconds of continuous focus.")
+    print("  Press 'T' to view session statistics (focus time, percentage).")
     print("  Perfect for studying or work sessions requiring sustained focus.")
-    print("  Press 'A' to start this mode.")
     print("----------------")
     print(f"Current Mode: DETECTING")
 
@@ -702,10 +714,33 @@ def main():
                 focus_reward_active = False
                 print("Focus reward display ended.")
             
+            # Calculate session duration
+            session_duration = now - session_start_time
+            
             if attention_issue:
                 attention_lost_counter += 1
-                # Reset continuous focus time when attention is lost
-                continuous_focus_time = 0.0
+                
+                # Handle distraction timing logic
+                if not brief_distraction_active:
+                    # Start tracking a new distraction
+                    brief_distraction_active = True
+                    distraction_start_time = now
+                else:
+                    # Check if this distraction has exceeded the brief threshold
+                    distraction_duration = now - distraction_start_time
+                    
+                    if distraction_duration >= BRIEF_DISTRACTION_THRESHOLD_SEC:
+                        # This is a significant distraction, reset focus time
+                        if continuous_focus_time > 0:
+                            print(f"Focus broken after {continuous_focus_time:.1f}s (distraction: {distraction_duration:.1f}s)")
+                            continuous_focus_time = 0.0
+                        
+                        # Add to total distraction time
+                        total_distraction_time += distraction_duration
+                        
+                        # Reset the distraction tracker since we've accounted for this time period
+                        distraction_start_time = now
+                
                 # Draw warning text
                 cv2.putText(display_frame, f"Attention: {attention_message}", 
                            (window_width // 3, 110), cv2.FONT_HERSHEY_SIMPLEX, 
@@ -713,9 +748,29 @@ def main():
             else:
                 attention_lost_counter = 0
                 
-                # Calculate time delta since last frame to track focus duration
+                # Calculate time delta since last frame
                 frame_time_delta = now - frame_start_time
+                
+                # Handle transitioning back to focus after brief distraction
+                if brief_distraction_active:
+                    distraction_duration = now - distraction_start_time
+                    
+                    if distraction_duration < BRIEF_DISTRACTION_THRESHOLD_SEC:
+                        # It was just a brief distraction, we can continue focus
+                        # Add the brief distraction to total distraction time
+                        total_distraction_time += distraction_duration
+                        
+                        # Don't reset continuous_focus_time since it was brief
+                        print(f"Brief distraction ignored: {distraction_duration:.1f}s")
+                    
+                    # Clear distraction state
+                    brief_distraction_active = False
+                
+                # Add to continuous focus time
                 continuous_focus_time += frame_time_delta
+                
+                # Add to total focus time for the session
+                total_focus_time += frame_time_delta
                 
                 # Check if user has maintained focus long enough for a reward
                 focus_reward_ready = (continuous_focus_time >= FOCUS_REWARD_TIME_SEC and 
@@ -776,6 +831,63 @@ def main():
                     cv2.putText(display_frame, "Focus Reward Progress", 
                                (reward_bar_x, reward_bar_y - 5), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                    
+            # Display session stats if enabled
+            if show_session_stats or focus_reward_active:
+                # Calculate focus percentage
+                focus_percentage = 0
+                if session_duration > 0:
+                    # Account for current focus/distraction state in calculation
+                    adjusted_focus_time = total_focus_time
+                    adjusted_distraction_time = total_distraction_time
+                    
+                    # Calculate the percentage
+                    focus_percentage = (adjusted_focus_time / session_duration) * 100
+                
+                # Format times for display
+                session_time_str = f"{int(session_duration // 60)}m {int(session_duration % 60)}s"
+                focus_time_str = f"{int(total_focus_time // 60)}m {int(total_focus_time % 60)}s"
+                
+                # Create a semi-transparent box for stats
+                stats_box_width = 400
+                stats_box_height = 125
+                stats_box_x = 20
+                stats_box_y = 150
+                
+                # Draw box background
+                overlay = display_frame.copy()
+                cv2.rectangle(overlay, 
+                             (stats_box_x, stats_box_y),
+                             (stats_box_x + stats_box_width, stats_box_y + stats_box_height),
+                             (40, 40, 40), -1)
+                cv2.addWeighted(overlay, 0.7, display_frame, 0.3, 0, display_frame)
+                
+                # Draw border
+                cv2.rectangle(display_frame, 
+                             (stats_box_x, stats_box_y),
+                             (stats_box_x + stats_box_width, stats_box_y + stats_box_height),
+                             (150, 150, 150), 1)
+                
+                # Title
+                cv2.putText(display_frame, "Focus Session Statistics", 
+                           (stats_box_x + 10, stats_box_y + 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
+                
+                # Session time
+                cv2.putText(display_frame, f"Session duration: {session_time_str}", 
+                           (stats_box_x + 10, stats_box_y + 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+                
+                # Focus time
+                cv2.putText(display_frame, f"Total focus: {focus_time_str} ({focus_percentage:.1f}%)", 
+                           (stats_box_x + 10, stats_box_y + 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)
+                
+                # Info about controls
+                if not focus_reward_active:
+                    cv2.putText(display_frame, "Press 'T' to toggle statistics", 
+                               (stats_box_x + 10, stats_box_y + 120), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
             
             # Display the focus reward animation if active
             if focus_reward_active:
@@ -1326,6 +1438,15 @@ def main():
             attention_lost_counter = 0
             last_attention_alert_time = 0
             
+            # Reset session tracking
+            session_start_time = time.time()
+            total_focus_time = 0.0
+            total_distraction_time = 0.0
+            distraction_start_time = 0.0
+            brief_distraction_active = False
+            show_session_stats = False
+            continuous_focus_time = 0.0
+            
             # If not calibrated yet, create a simple default calibration
             # This allows the cursor to work without going through calibration
             if not gaze_map_params:
@@ -1348,6 +1469,11 @@ def main():
                 recording_start_time = frame_start_time
                 temp_calibration_offsets = []  # Clear any previous samples
                 print(f"  Started recording for calibration point {calibration_step + 1}")
+
+        elif key == ord('t'):  # Toggle session stats display
+            if current_mode == MODE_ADHD_ASSISTANT:
+                show_session_stats = not show_session_stats
+                print(f"Session stats display: {'ON' if show_session_stats else 'OFF'}")
 
         # Update FPS calculation
         frame_duration = time.time() - frame_start_time
