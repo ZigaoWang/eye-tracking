@@ -104,63 +104,54 @@ def find_pupil(eye_roi_gray):
     return pupil_center, pupil_contour
 
 # --- Gaze to Window Mapping Function ---
-def map_gaze_to_window(pupil_info, scale_factor_x, scale_factor_y, calibration_data=None):
-    """
-    Map the gaze offset to window coordinates based on calibration data.
-    If no calibration data is provided, it will use a simplified mapping.
-    """
-    if not pupil_info:
-        return None
-        
-    # Extract pupil information
-    offset_x, offset_y = pupil_info['offset']
-    is_left = pupil_info.get('is_left', True)  # Default to left eye if not specified
-    left_margin = pupil_info.get('margins', (0, 0))[0]
-    top_margin = pupil_info.get('margins', (0, 0))[1]
-    
-    # Calculate actual display area scale factors (excluding margins)
-    # This calculates the scale factor for the area where the webcam frame is actually displayed
-    # rather than the entire window
-    webcam_width, webcam_height = WEBCAM_WIDTH, WEBCAM_HEIGHT
-    webcam_aspect = webcam_width / webcam_height
-    window_aspect = WINDOW_WIDTH / WINDOW_HEIGHT
-    
-    if webcam_aspect > window_aspect:
-        # If webcam is wider than window, display area is window_width × new_h
-        new_w = WINDOW_WIDTH
-        new_h = int(new_w / webcam_aspect)
-        effective_scale_x = new_w / webcam_width
-        effective_scale_y = new_h / webcam_height
+def map_gaze_to_window(gaze_offset, calibration_data, window_width, window_height):
+    """Maps relative gaze offset to window coordinates based on calibration."""
+    # Simple linear interpolation/scaling based on calibration extrema
+    if not calibration_data or len(calibration_data) < 4:
+        # Return center of window if not calibrated
+        return window_width // 2, window_height // 2
+
+    # Handle different input formats - could be tuple or dict with 'offset' key
+    if isinstance(gaze_offset, dict) and 'offset' in gaze_offset:
+        # Extract offset from dict format
+        offset_x, offset_y = gaze_offset['offset']
+        # Get margins if available
+        margins = gaze_offset.get('margins', (0, 0))
     else:
-        # If webcam is taller than window, display area is new_w × window_height
-        new_h = WINDOW_HEIGHT
-        new_w = int(new_h * webcam_aspect)
-        effective_scale_x = new_w / webcam_width
-        effective_scale_y = new_h / webcam_height
-    
-    if calibration_data:
-        # Apply calibration-based mapping (if available in the future)
-        # This would use a more sophisticated approach with calibration points
-        pass
+        # Direct tuple input
+        offset_x, offset_y = gaze_offset
+        margins = (0, 0)
+        
+    # Clamp offset to calibrated range to avoid going off-window drastically
+    offset_x = max(calibration_data['min_x'], min(calibration_data['max_x'], offset_x))
+    offset_y = max(calibration_data['min_y'], min(calibration_data['max_y'], offset_y))
+
+    # Interpolate X
+    cal_x_range = calibration_data['max_x'] - calibration_data['min_x']
+    if cal_x_range == 0:  # Avoid division by zero
+        window_x = window_width / 2
     else:
-        # Basic mapping - scaled linear transformation
-        # The actual pupil coordinate in the display frame
-        pupil_abs_x, pupil_abs_y = pupil_info['pupil_abs']
-        
-        # Apply effective scaling and account for margins
-        scaled_x = pupil_abs_x * effective_scale_x + left_margin
-        scaled_y = pupil_abs_y * effective_scale_y + top_margin
-        
-        # Map to gaze coordinates with adjustments
-        # These magic numbers would be replaced by calibration
-        gaze_x = scaled_x + offset_x * (4.0 if is_left else 3.5)
-        gaze_y = scaled_y + offset_y * 3.5
-        
-        # Ensure coordinates are within screen bounds
-        gaze_x = max(0, min(WINDOW_WIDTH, gaze_x)) 
-        gaze_y = max(0, min(WINDOW_HEIGHT, gaze_y))
-        
-        return (int(gaze_x), int(gaze_y))
+        window_x = ((offset_x - calibration_data['min_x']) / cal_x_range) * window_width
+
+    # Interpolate Y
+    cal_y_range = calibration_data['max_y'] - calibration_data['min_y']
+    if cal_y_range == 0:  # Avoid division by zero
+        window_y = window_height / 2
+    else:
+        window_y = ((offset_y - calibration_data['min_y']) / cal_y_range) * window_height
+
+    # Apply margins if applicable
+    left_margin, top_margin = margins
+    if left_margin > 0 or top_margin > 0:
+        # Adjust coordinates for letterboxing if needed
+        window_x = max(left_margin, min(window_width - left_margin, window_x))
+        window_y = max(top_margin, min(window_height - top_margin, window_y))
+
+    # Ensure values stay within the window
+    window_x = max(CURSOR_RADIUS, min(window_width - CURSOR_RADIUS, window_x))
+    window_y = max(CURSOR_RADIUS, min(window_height - CURSOR_RADIUS, window_y))
+
+    return int(window_x), int(window_y)
 
 def main():
     # --- Screen Setup ---
@@ -426,13 +417,15 @@ def main():
                     'pupil_abs': (left_pupil_x, left_pupil_y),
                     'eye_center_abs': (left_eye_x, eye_y),
                     'offset': (left_pupil_x - left_eye_x, left_pupil_y - eye_y),
-                    'is_left': True
+                    'is_left': True,
+                    'margins': (0, 0)  # Add margins for simulated data as well
                 },
                 {
                     'pupil_abs': (right_pupil_x, right_pupil_y),
                     'eye_center_abs': (right_eye_x, eye_y),
                     'offset': (right_pupil_x - right_eye_x, right_pupil_y - eye_y),
-                    'is_left': False
+                    'is_left': False,
+                    'margins': (0, 0)  # Add margins for simulated data as well
                 }
             ]
             # Set eye detection state based on mouse position
@@ -658,9 +651,18 @@ def main():
         if len(detected_pupils) > 0:
             avg_offset_x = sum(p['offset'][0] for p in detected_pupils) / len(detected_pupils)
             avg_offset_y = sum(p['offset'][1] for p in detected_pupils) / len(detected_pupils)
-            avg_gaze_offset = (avg_offset_x, avg_offset_y)
+            
+            # Include the margins from the last detected pupil (should be same for all pupils in a frame)
+            margins = detected_pupils[-1].get('margins', (0, 0))
+            
+            # Store as a dictionary with offset and margins
+            avg_gaze_offset = {
+                'offset': (avg_offset_x, avg_offset_y),
+                'margins': margins
+            }
+            
             gaze_offset_buffer.append(avg_gaze_offset)
-        elif current_mode == MODE_CONTROLLING and len(gaze_offset_buffer) > 0:
+        elif current_mode in [MODE_CONTROLLING, MODE_ADHD_ASSISTANT] and len(gaze_offset_buffer) > 0:
             # If eyes lost, use the last known good offset for smoothing
             avg_gaze_offset = gaze_offset_buffer[-1]
         
@@ -672,10 +674,29 @@ def main():
             weights = np.exp(np.linspace(-1, 0, len(gaze_offset_buffer)))
             weights /= weights.sum() # Normalize weights
             
+            # Extract the actual offset values from the buffer items
+            offset_values = []
+            for g in gaze_offset_buffer:
+                if isinstance(g, dict) and 'offset' in g:
+                    offset_values.append(g['offset'])
+                else:
+                    offset_values.append(g)  # Handle legacy format
+            
             # Apply weights to x and y coordinates
-            smooth_x = sum(g[0] * w for g, w in zip(gaze_offset_buffer, weights))
-            smooth_y = sum(g[1] * w for g, w in zip(gaze_offset_buffer, weights))
-            smoothed_gaze_offset = (smooth_x, smooth_y)
+            smooth_x = sum(g[0] * w for g, w in zip(offset_values, weights))
+            smooth_y = sum(g[1] * w for g, w in zip(offset_values, weights))
+            
+            # Get margins from the most recent entry
+            latest_entry = gaze_offset_buffer[-1]
+            if isinstance(latest_entry, dict) and 'margins' in latest_entry:
+                margins = latest_entry['margins']
+                smoothed_gaze_offset = {
+                    'offset': (smooth_x, smooth_y),
+                    'margins': margins
+                }
+            else:
+                # Fallback to simple tuple if no margins available
+                smoothed_gaze_offset = (smooth_x, smooth_y)
 
         # --- ADHD Attention Assistant Logic ---
         if current_mode == MODE_ADHD_ASSISTANT:
@@ -1389,7 +1410,8 @@ def main():
         else:  # MODE_DETECTING
             # Show basic information for debugging
             if avg_gaze_offset:
-                cv2.putText(display_frame, f"Gaze offset: ({avg_gaze_offset[0]:.1f}, {avg_gaze_offset[1]:.1f})", 
+                offset_display = avg_gaze_offset['offset'] if isinstance(avg_gaze_offset, dict) else avg_gaze_offset
+                cv2.putText(display_frame, f"Gaze offset: ({offset_display[0]:.1f}, {offset_display[1]:.1f})", 
                            (window_width // 3, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             
             # Show eye status
