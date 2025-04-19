@@ -4,6 +4,7 @@ import os
 import pyautogui
 import time
 from collections import deque
+import pygame  # Added for audio playback
 
 # --- Constants ---
 # Modes
@@ -12,6 +13,7 @@ MODE_CALIBRATING = 1
 MODE_CALIBRATING_RECORDING = 2  # New mode for active recording
 MODE_CONTROLLING = 3
 MODE_SIMULATED = 4  # New mode for testing without camera
+MODE_ADHD_ASSISTANT = 5  # New mode for ADHD attention assistant
 
 # Calibration
 CALIBRATION_POINTS = [
@@ -35,6 +37,12 @@ GAZE_DEADZONE = 1.0  # Ignore tiny movements (pixel threshold)
 CURSOR_RADIUS = 10
 CURSOR_COLOR = (255, 0, 255)  # Magenta cursor
 CLICK_DURATION = 0.5  # How long to show click indication (in seconds)
+
+# ADHD Attention Assistant Constants
+ATTENTION_COOLDOWN_SEC = 5.0  # Increased from 3.0 - longer time between alerts
+BORDER_THRESHOLD_PERCENT = 0.15  # Consider near border if within this % of frame edge
+ATTENTION_LOST_FRAMES = 20  # Number of frames to wait before alerting
+ATTENTION_ALERT_DURATION = 3.0  # How long to show the flashing alert (seconds)
 
 # --- Pupil Detection Function ---
 def find_pupil(eye_roi_gray):
@@ -135,6 +143,18 @@ def main():
     
     # --------------------
 
+    # --- Initialize Audio ---
+    pygame.mixer.init()
+    attention_sound_path = "attention.mp3"
+    # Verify the attention sound file exists
+    if not os.path.exists(attention_sound_path):
+        print(f"Warning: Attention sound file not found at {attention_sound_path}")
+        print("The attention alert feature will not work without this file.")
+        print("Please add an audio file named 'attention.mp3' to the application directory.")
+    else:
+        print(f"Attention sound loaded: {attention_sound_path}")
+    # ----------------------
+
     # --- Load Haar Cascades ---
     # Try to find the data directory automatically
     cv_data_dir = None
@@ -199,9 +219,17 @@ def main():
     
     # Gaze Smoothing
     gaze_offset_buffer = deque(maxlen=GAZE_SMOOTHING_BUFFER_SIZE)
+    
+    # ADHD Attention Assistant State
+    attention_lost_counter = 0
+    last_attention_alert_time = 0
+    attention_alert_active = False
+    attention_alert_start_time = 0
+    current_attention_message = ""
     # -------------------------
 
     # --- Initialize webcam or create simulated input ---
+    camera_access_success = False
     try:
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
@@ -218,10 +246,22 @@ def main():
             frame_height = 480
         else:
             print("Camera opened successfully!")
+            camera_access_success = True
     except Exception as e:
         print(f"Error initializing webcam: {e}")
         print("Please check camera permissions in System Settings.")
         print("Starting in SIMULATED mode for testing...")
+        current_mode = MODE_SIMULATED
+        # Create a simulated frame
+        frame_width = 640
+        frame_height = 480
+    
+    # For testing/demos, use simulated mode by default during development
+    if not camera_access_success:
+        print("For this hackathon demo, we'll use SIMULATED mode.")
+        print("In this mode, use your mouse to control the simulated eye movement.")
+        print("Move your mouse around the screen to simulate eye tracking.")
+        print("Move your mouse off screen or to edges to trigger attention alerts.")
         current_mode = MODE_SIMULATED
         # Create a simulated frame
         frame_width = 640
@@ -231,11 +271,20 @@ def main():
     print(" C: Start Calibration")
     print(" S: Start Virtual Cursor Control (after calibration)")
     print(" D: Stop Control / Return to Detection Mode")
+    print(" A: Start ADHD Attention Assistant Mode")
     print(" SPACE: Confirm gaze during calibration")
     print(" Q: Quit")
     print("----------------")
     print("Wink with LEFT eye for LEFT click")
     print("Wink with RIGHT eye for RIGHT click")
+    print("----------------")
+    print("ADHD ATTENTION ASSISTANT:")
+    print("  This mode helps maintain focus by monitoring your attention.")
+    print("  When you look away, move too close to edges, or leave view,")
+    print("  it will play a sound alert and display a reminder message.")
+    print("  Perfect for studying or work sessions requiring sustained focus.")
+    print("  Press 'A' to start this mode.")
+    print("----------------")
     print(f"Current Mode: DETECTING")
 
     while True:
@@ -252,11 +301,38 @@ def main():
             # Draw a face in the center
             face_x, face_y = frame_width // 2 - 50, frame_height // 2 - 50
             face_size = 100
-            # Draw face circle
-            cv2.circle(frame, (face_x + face_size//2, face_y + face_size//2), 
-                      face_size//2, (200, 200, 200), -1)
             
-            # Draw eyes
+            # Get mouse position for simulation
+            mouse_x, mouse_y = pyautogui.position()
+            screen_w, screen_h = pyautogui.size()
+            
+            # Check if mouse is near screen edge or off screen to simulate attention loss
+            mouse_near_edge = (mouse_x < 50 or mouse_x > screen_w - 50 or 
+                              mouse_y < 50 or mouse_y > screen_h - 50)
+            
+            # Calculate relative position of mouse in frame
+            rel_mouse_x = (mouse_x / screen_w) * frame_width
+            rel_mouse_y = (mouse_y / screen_h) * frame_height
+            
+            # For ADHD assistant testing: If mouse is near edge, move simulated face to edge
+            if mouse_near_edge and current_mode == MODE_ADHD_ASSISTANT:
+                # Move face toward the edge where mouse is
+                if mouse_x < 50:  # Left edge
+                    face_x = 0
+                elif mouse_x > screen_w - 50:  # Right edge
+                    face_x = frame_width - face_size
+                
+                if mouse_y < 50:  # Top edge
+                    face_y = 0
+                elif mouse_y > screen_h - 50:  # Bottom edge
+                    face_y = frame_height - face_size
+            
+            # Draw face circle (if near edge, make it fainter to simulate partial detection)
+            face_opacity = 100 if mouse_near_edge else 200
+            cv2.circle(frame, (face_x + face_size//2, face_y + face_size//2), 
+                      face_size//2, (face_opacity, face_opacity, face_opacity), -1)
+            
+            # Draw eyes 
             eye_y = face_y + face_size//3
             left_eye_x = face_x + face_size//4
             right_eye_x = face_x + 3*face_size//4
@@ -266,9 +342,6 @@ def main():
             cv2.circle(frame, (right_eye_x, eye_y), 10, (255, 255, 255), -1)
             
             # Pupils (move with mouse for testing)
-            mouse_x, mouse_y = pyautogui.position()
-            screen_w, screen_h = pyautogui.size()
-            
             # Calculate pupil offset based on mouse position
             pupil_x_offset = (mouse_x / screen_w - 0.5) * 5
             pupil_y_offset = (mouse_y / screen_h - 0.5) * 5
@@ -279,8 +352,15 @@ def main():
             right_pupil_x = int(right_eye_x + pupil_x_offset) 
             right_pupil_y = int(eye_y + pupil_y_offset)
             
-            cv2.circle(frame, (left_pupil_x, left_pupil_y), 4, (0, 0, 0), -1)
-            cv2.circle(frame, (right_pupil_x, right_pupil_y), 4, (0, 0, 0), -1)
+            # For ADHD testing, if mouse is out of screen, don't show pupils
+            if mouse_near_edge and current_mode == MODE_ADHD_ASSISTANT:
+                # Make pupils invisible or barely visible when simulating attention loss
+                pupil_color = (100, 100, 100)  # Grey/faint
+            else:
+                pupil_color = (0, 0, 0)  # Black/normal
+                
+            cv2.circle(frame, (left_pupil_x, left_pupil_y), 4, pupil_color, -1)
+            cv2.circle(frame, (right_pupil_x, right_pupil_y), 4, pupil_color, -1)
             
             # For calibration testing, simulate the pupil detection and gaze offset
             detected_pupils = [
@@ -297,8 +377,10 @@ def main():
                     'is_left': False
                 }
             ]
-            left_eye_detected = True
-            right_eye_detected = True
+            # Set eye detection state based on mouse position
+            # If mouse is at edge or outside, simulate not detecting eyes
+            left_eye_detected = not (mouse_near_edge and current_mode == MODE_ADHD_ASSISTANT)
+            right_eye_detected = not (mouse_near_edge and current_mode == MODE_ADHD_ASSISTANT)
             
             ret = True
         else:
@@ -535,6 +617,235 @@ def main():
             smooth_x = sum(g[0] * w for g, w in zip(gaze_offset_buffer, weights))
             smooth_y = sum(g[1] * w for g, w in zip(gaze_offset_buffer, weights))
             smoothed_gaze_offset = (smooth_x, smooth_y)
+
+        # --- ADHD Attention Assistant Logic ---
+        if current_mode == MODE_ADHD_ASSISTANT:
+            # Display cursor in ADHD mode (similar to CONTROLLING mode)
+            if smoothed_gaze_offset and gaze_map_params:
+                # Map gaze offset to window coordinates for the virtual cursor
+                target_cursor_pos = map_gaze_to_window(smoothed_gaze_offset, 
+                                                     gaze_map_params, 
+                                                     window_width, window_height)
+                
+                # Apply deadzone to reduce shakiness when eyes are relatively still
+                dx = target_cursor_pos[0] - previous_cursor_pos[0]
+                dy = target_cursor_pos[1] - previous_cursor_pos[1]
+                
+                # Only move cursor if change exceeds deadzone
+                distance = np.sqrt(dx*dx + dy*dy)
+                if distance < GAZE_DEADZONE:
+                    # Use previous position to reduce jitter
+                    target_cursor_pos = previous_cursor_pos
+                
+                # Apply additional smoothing between frames for smoother cursor movement
+                cursor_x = int(previous_cursor_pos[0] * (1-CURSOR_SMOOTHING_FACTOR) + 
+                              target_cursor_pos[0] * CURSOR_SMOOTHING_FACTOR)
+                cursor_y = int(previous_cursor_pos[1] * (1-CURSOR_SMOOTHING_FACTOR) + 
+                              target_cursor_pos[1] * CURSOR_SMOOTHING_FACTOR)
+                
+                cursor_pos = (cursor_x, cursor_y)
+                previous_cursor_pos = cursor_pos  # Save for next frame
+            else:
+                # If no valid gaze data, put cursor in center
+                cursor_pos = (window_width // 2, window_height // 2)
+                previous_cursor_pos = cursor_pos
+            
+            # Always draw cursor
+            cv2.circle(display_frame, cursor_pos, CURSOR_RADIUS, CURSOR_COLOR, -1)
+            
+            # Check if attention is lost based on various conditions
+            frame_height, frame_width = frame.shape[:2]
+            border_x = int(frame_width * BORDER_THRESHOLD_PERCENT)
+            border_y = int(frame_height * BORDER_THRESHOLD_PERCENT)
+            
+            attention_issue = False
+            attention_message = ""
+            
+            # Check if no face detected
+            if len(faces) == 0:
+                attention_issue = True
+                attention_message = "No face detected"
+            
+            # Check if no eyes detected
+            elif not (left_eye_detected or right_eye_detected):
+                attention_issue = True
+                attention_message = "Eyes not detected"
+            
+            # Check if face is near border (looking away)
+            elif face_center:
+                face_x, face_y = face_center
+                if (face_x < border_x or face_x > frame_width - border_x or 
+                    face_y < border_y or face_y > frame_height - border_y):
+                    attention_issue = True
+                    attention_message = "Face near edge"
+            
+            # Update attention counter
+            if attention_issue:
+                attention_lost_counter += 1
+                # Draw warning text
+                cv2.putText(display_frame, f"Attention: {attention_message}", 
+                           (window_width // 3, 110), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.7, (0, 0, 255), 2)
+            else:
+                attention_lost_counter = 0
+                # Draw positive feedback
+                cv2.putText(display_frame, "Attention: Good focus", 
+                           (window_width // 3, 110), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.7, (0, 255, 0), 2)
+            
+            # Trigger attention alert if threshold reached and cooldown expired
+            now = time.time()
+            
+            # Check if we need to deactivate an ongoing alert
+            if attention_alert_active and (now - attention_alert_start_time >= ATTENTION_ALERT_DURATION):
+                attention_alert_active = False
+                print("Attention alert ended.")
+            
+            # Start a new alert if needed
+            if (not attention_alert_active and 
+                attention_lost_counter >= ATTENTION_LOST_FRAMES and 
+                now - last_attention_alert_time > ATTENTION_COOLDOWN_SEC):
+                # Play attention sound if file exists
+                if os.path.exists(attention_sound_path):
+                    try:
+                        pygame.mixer.music.load(attention_sound_path)
+                        pygame.mixer.music.play()
+                        print("Attention alert triggered!")
+                    except Exception as e:
+                        print(f"Error playing attention sound: {e}")
+                
+                # Start new alert
+                attention_alert_active = True
+                attention_alert_start_time = now
+                last_attention_alert_time = now
+                current_attention_message = attention_message
+            
+            # Show flashing alert if active
+            if attention_alert_active:
+                # Calculate flashing effect parameters
+                time_in_alert = now - attention_alert_start_time
+                
+                # Create flashing effect by varying intensity and colors based on time
+                # Multiple flashing effects combined for maximum attention grabbing
+                
+                # 1. Determine flash intensity (0.0 to 1.0) using sine wave for smooth pulsing
+                flash_speed = 10.0  # Hz - higher = faster flashing
+                flash_intensity = 0.5 + 0.5 * np.sin(time_in_alert * flash_speed * 2 * np.pi)
+                
+                # 2. Create color alternation effect
+                color_cycle_speed = 5.0  # Hz
+                color_phase = (time_in_alert * color_cycle_speed) % 3.0
+                
+                if color_phase < 1.0:
+                    # Red phase
+                    flash_color = (0, 0, 255)
+                elif color_phase < 2.0:
+                    # Yellow phase
+                    flash_color = (0, 255, 255)
+                else:
+                    # Blue phase
+                    flash_color = (255, 0, 0)
+                
+                # Create flashing overlay with varying opacity
+                overlay = display_frame.copy()
+                
+                # Fill with current flash color
+                cv2.rectangle(overlay, (0, 0), (window_width, window_height), 
+                            flash_color, -1)
+                
+                # Apply varying opacity based on flash intensity
+                alpha = 0.2 + 0.3 * flash_intensity  # Opacity varies between 0.2-0.5
+                cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
+                
+                # Add border that pulses in thickness
+                border_thickness = int(5 + 15 * flash_intensity)  # Thickness varies between 5-20px
+                cv2.rectangle(display_frame, (0, 0), (window_width, window_height), 
+                            flash_color, border_thickness)
+                
+                # 3. Create a prominent text box in the center that moves slightly
+                text_box_width = window_width - 100
+                text_box_height = 200
+                
+                # Make the text box position jitter slightly to grab attention
+                jitter_amount = 10
+                jitter_x = int(jitter_amount * np.sin(time_in_alert * 15))
+                jitter_y = int(jitter_amount * np.cos(time_in_alert * 12))
+                
+                text_box_x = (window_width - text_box_width) // 2 + jitter_x
+                text_box_y = (window_height - text_box_height) // 2 + jitter_y
+                
+                # Draw semi-transparent black background for text
+                cv2.rectangle(display_frame, 
+                            (text_box_x, text_box_y),
+                            (text_box_x + text_box_width, text_box_y + text_box_height),
+                            (0, 0, 0), -1)
+                cv2.rectangle(display_frame, 
+                            (text_box_x, text_box_y),
+                            (text_box_x + text_box_width, text_box_y + text_box_height),
+                            flash_color, 5)  # Border uses flash color
+                
+                # 4. Flashing text for maximum effect - alternate size and intensity
+                text_size = 1.6 + 0.4 * flash_intensity  # Size varies between 1.6-2.0
+                
+                # Main attention text
+                cv2.putText(display_frame, "GET BACK TO ATTENTION!", 
+                        (window_width // 2 - 300 + jitter_x, window_height // 2 - 30 + jitter_y), 
+                        cv2.FONT_HERSHEY_SIMPLEX, text_size, (255, 255, 255), 5)
+                
+                # Add a glow/halo effect with the flash color
+                cv2.putText(display_frame, "GET BACK TO ATTENTION!", 
+                        (window_width // 2 - 300 + jitter_x, window_height // 2 - 30 + jitter_y), 
+                        cv2.FONT_HERSHEY_SIMPLEX, text_size, flash_color, 10)
+                cv2.putText(display_frame, "GET BACK TO ATTENTION!", 
+                        (window_width // 2 - 300 + jitter_x, window_height // 2 - 30 + jitter_y), 
+                        cv2.FONT_HERSHEY_SIMPLEX, text_size, (255, 255, 255), 2)
+                
+                # 5. Add the specific attention issue
+                cv2.putText(display_frame, f"Issue: {current_attention_message}", 
+                        (window_width // 2 - 150 + jitter_x, window_height // 2 + 50 + jitter_y), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, flash_color, 3)
+                cv2.putText(display_frame, f"Issue: {current_attention_message}", 
+                        (window_width // 2 - 150 + jitter_x, window_height // 2 + 50 + jitter_y), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 1)
+                
+                # Also add a countdown to show how long until the alert ends
+                time_left = ATTENTION_ALERT_DURATION - time_in_alert
+                cv2.putText(display_frame, f"Alert ends in: {time_left:.1f}s", 
+                        (window_width // 2 - 150 + jitter_x, window_height // 2 + 100 + jitter_y), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
+            
+            # Draw attention status bar
+            attention_bar_width = 200
+            attention_bar_height = 20
+            bar_x = window_width - attention_bar_width - 20
+            bar_y = 50
+            
+            # Draw bar background
+            cv2.rectangle(display_frame, (bar_x, bar_y), 
+                         (bar_x + attention_bar_width, bar_y + attention_bar_height), 
+                         (100, 100, 100), -1)
+            
+            # Calculate fill level (red when approaching threshold)
+            fill_width = int((attention_lost_counter / ATTENTION_LOST_FRAMES) * attention_bar_width)
+            fill_width = min(fill_width, attention_bar_width)
+            
+            # Choose color based on how close to threshold
+            if attention_lost_counter < ATTENTION_LOST_FRAMES * 0.5:
+                fill_color = (0, 255, 0)  # Green
+            elif attention_lost_counter < ATTENTION_LOST_FRAMES * 0.8:
+                fill_color = (0, 255, 255)  # Yellow
+            else:
+                fill_color = (0, 0, 255)  # Red
+            
+            # Draw filled portion
+            cv2.rectangle(display_frame, (bar_x, bar_y), 
+                         (bar_x + fill_width, bar_y + attention_bar_height), 
+                         fill_color, -1)
+            
+            # Draw label
+            cv2.putText(display_frame, "Attention Tracker", 
+                       (bar_x, bar_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 
+                       0.5, (255, 255, 255), 1)
 
         # --- Mode-Specific Logic ---
         
@@ -785,6 +1096,10 @@ def main():
             cv2.putText(display_frame, "Camera access denied - using simulated input", 
                        (window_width // 3 - 100, 80), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 100, 100), 2)
+        elif current_mode == MODE_ADHD_ASSISTANT:
+            mode_text = "Mode: ADHD ATTENTION ASSISTANT"
+            cv2.putText(display_frame, mode_text, (window_width // 3, 50), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         else:
             mode_text = f"Mode: {'DETECTING' if current_mode == MODE_DETECTING else ('CALIBRATING' if current_mode == MODE_CALIBRATING else ('RECORDING' if current_mode == MODE_CALIBRATING_RECORDING else 'CONTROLLING'))}"
             cv2.putText(display_frame, mode_text, (window_width // 3, 50), 
@@ -802,6 +1117,11 @@ def main():
 
         # --- Handle Key Presses ---
         key = cv2.waitKey(1) & 0xFF
+
+        # Check if attention alert is active and any key pressed to dismiss it
+        if attention_alert_active and key != 255:  # 255 means no key pressed
+            attention_alert_active = False
+            print("Attention alert dismissed by user.")
 
         if key == ord('q'):
             print("Quitting...")
@@ -831,6 +1151,27 @@ def main():
                 print("Stopping and returning to Detection Mode.")
                 current_mode = MODE_DETECTING
 
+        elif key == ord('a'):  # New key for ADHD Assistant mode
+            print("Starting ADHD Attention Assistant...")
+            current_mode = MODE_ADHD_ASSISTANT
+            attention_lost_counter = 0
+            last_attention_alert_time = 0
+            
+            # If not calibrated yet, create a simple default calibration
+            # This allows the cursor to work without going through calibration
+            if not gaze_map_params:
+                print("  No calibration found. Using default values for cursor control.")
+                # Create simple default mapping parameters based on typical ranges
+                # These are rough estimates that will work for basic cursor movement
+                gaze_map_params = {
+                    'min_x': -30.0,  # Typical minimum gaze offset X
+                    'max_x': 30.0,   # Typical maximum gaze offset X
+                    'min_y': -20.0,  # Typical minimum gaze offset Y
+                    'max_y': 20.0    # Typical maximum gaze offset Y
+                }
+                # Clear any existing buffer for fresh start
+                gaze_offset_buffer.clear()
+
         elif key == ord(' '):  # Spacebar
             if current_mode == MODE_CALIBRATING and calibration_step < len(CALIBRATION_POINTS):
                 # Start recording for this calibration point
@@ -851,6 +1192,7 @@ def main():
     # Release webcam and destroy windows
     cap.release()
     cv2.destroyAllWindows()
+    pygame.mixer.quit()  # Clean up pygame
     print("Webcam feed stopped.")
 
 if __name__ == "__main__":

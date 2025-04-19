@@ -1,0 +1,72 @@
+# ADHD Attention Assistant
+
+## Project Overview
+This project was developed for the hackathon theme "科技无障碍 AI" (Technology Accessibility AI). It uses computer vision and AI to help ADHD individuals maintain focus during work or study sessions.
+
+## Key Features
+
+### ADHD Attention Assistant Mode
+- **Purpose**: Helps users stay focused by monitoring their attention via webcam
+- **How it works**: 
+  - Detects when the user is looking away from the screen
+  - Detects when the user's face/eyes aren't visible to the camera
+  - Provides immediate visual and audio alerts when attention is lost
+  - Shows an eye-catching flashing alert that demands attention
+  - Tracks focus metrics in a status bar
+
+### Additional Features
+- Cursor control via eye tracking (requires calibration)
+- Wink detection for click actions
+- Simulated mode for testing without camera access
+
+## Requirements
+- Python 3.7+
+- OpenCV (cv2)
+- NumPy
+- PyAutoGUI
+- Pygame (for audio alerts)
+
+## Installation
+```bash
+pip install opencv-python numpy pyautogui pygame
+```
+
+## Usage
+
+1. Run the application:
+```bash
+python main.py
+```
+
+2. You'll see a webcam feed and detection information. Press keys to control the application:
+   - `A`: Start ADHD Attention Assistant mode
+   - `C`: Start calibration (for cursor control)
+   - `S`: Start cursor control (after calibration)
+   - `D`: Return to detection mode
+   - `Q`: Quit
+
+### Using ADHD Attention Assistant Mode
+1. Press `A` to activate
+2. Position yourself in front of the camera
+3. Continue your work as normal
+4. If you look away or get distracted, the system will flash an alert and play a sound
+5. Press any key to dismiss an active alert
+
+### Camera Permissions
+On macOS, you'll need to grant camera permissions:
+1. Go to System Settings > Privacy & Security > Camera
+2. Allow your terminal or IDE to access the camera
+
+### Simulation Mode
+If camera access isn't available, the application will run in simulation mode:
+- Move your mouse around the screen to control the simulated eye movement
+- Move your mouse to the edge of the screen to trigger attention alerts
+
+## Hackathon Context
+This project addresses accessibility needs for individuals with ADHD by providing technology that:
+1. Reduces distractions
+2. Helps maintain focus during important tasks
+3. Creates awareness of attention patterns
+4. Provides immediate feedback when focus shifts
+
+The AI component uses computer vision to detect face position, eye states, and gaze direction, then applies algorithms to determine attention state and provide appropriate interventions. 
