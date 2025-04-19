@@ -43,6 +43,9 @@ ATTENTION_COOLDOWN_SEC = 5.0  # Increased from 3.0 - longer time between alerts
 BORDER_THRESHOLD_PERCENT = 0.15  # Consider near border if within this % of frame edge
 ATTENTION_LOST_FRAMES = 20  # Number of frames to wait before alerting
 ATTENTION_ALERT_DURATION = 3.0  # How long to show the flashing alert (seconds)
+FOCUS_REWARD_TIME_SEC = 10.0  # Time of continuous focus to trigger reward
+FOCUS_REWARD_COOLDOWN_SEC = 30.0  # Minimum time between focus rewards
+FOCUS_REWARD_DISPLAY_DURATION = 3.0  # How long to show the reward screen (seconds)
 
 # --- Pupil Detection Function ---
 def find_pupil(eye_roi_gray):
@@ -146,13 +149,21 @@ def main():
     # --- Initialize Audio ---
     pygame.mixer.init()
     attention_sound_path = "attention.mp3"
-    # Verify the attention sound file exists
+    wow_sound_path = "wow.mp3"
+    # Verify the sound files exist
     if not os.path.exists(attention_sound_path):
         print(f"Warning: Attention sound file not found at {attention_sound_path}")
         print("The attention alert feature will not work without this file.")
         print("Please add an audio file named 'attention.mp3' to the application directory.")
     else:
         print(f"Attention sound loaded: {attention_sound_path}")
+        
+    if not os.path.exists(wow_sound_path):
+        print(f"Warning: Reward sound file not found at {wow_sound_path}")
+        print("The focus reward feature will not work without this file.")
+        print("Please add an audio file named 'wow.mp3' to the application directory.")
+    else:
+        print(f"Reward sound loaded: {wow_sound_path}")
     # ----------------------
 
     # --- Load Haar Cascades ---
@@ -226,6 +237,10 @@ def main():
     attention_alert_active = False
     attention_alert_start_time = 0
     current_attention_message = ""
+    continuous_focus_time = 0.0  # Track how long user has maintained focus
+    last_focus_reward_time = 0.0  # Track when the last focus reward was given
+    focus_reward_active = False   # Is reward animation currently active
+    focus_reward_start_time = 0.0 # When was the current reward started
     # -------------------------
 
     # --- Initialize webcam or create simulated input ---
@@ -680,22 +695,172 @@ def main():
                     attention_message = "Face near edge"
             
             # Update attention counter
+            now = time.time()
+            
+            # Check if we need to deactivate a focus reward display
+            if focus_reward_active and (now - focus_reward_start_time >= FOCUS_REWARD_DISPLAY_DURATION):
+                focus_reward_active = False
+                print("Focus reward display ended.")
+            
             if attention_issue:
                 attention_lost_counter += 1
+                # Reset continuous focus time when attention is lost
+                continuous_focus_time = 0.0
                 # Draw warning text
                 cv2.putText(display_frame, f"Attention: {attention_message}", 
                            (window_width // 3, 110), cv2.FONT_HERSHEY_SIMPLEX, 
                            0.7, (0, 0, 255), 2)
             else:
                 attention_lost_counter = 0
-                # Draw positive feedback
-                cv2.putText(display_frame, "Attention: Good focus", 
-                           (window_width // 3, 110), cv2.FONT_HERSHEY_SIMPLEX, 
-                           0.7, (0, 255, 0), 2)
+                
+                # Calculate time delta since last frame to track focus duration
+                frame_time_delta = now - frame_start_time
+                continuous_focus_time += frame_time_delta
+                
+                # Check if user has maintained focus long enough for a reward
+                focus_reward_ready = (continuous_focus_time >= FOCUS_REWARD_TIME_SEC and 
+                                     now - last_focus_reward_time >= FOCUS_REWARD_COOLDOWN_SEC and
+                                     not focus_reward_active)
+                
+                if focus_reward_ready:
+                    # Play the reward sound
+                    if os.path.exists(wow_sound_path):
+                        try:
+                            # Use a separate channel for the reward sound to avoid 
+                            # interrupting any active attention alerts
+                            reward_channel = pygame.mixer.Channel(1)
+                            reward_sound = pygame.mixer.Sound(wow_sound_path)
+                            reward_channel.play(reward_sound)
+                            print(f"Focus reward triggered! Maintained focus for {continuous_focus_time:.1f} seconds")
+                        except Exception as e:
+                            print(f"Error playing reward sound: {e}")
+                    
+                    # Reset the reward timer and update cooldown
+                    continuous_focus_time = 0.0
+                    last_focus_reward_time = now
+                    
+                    # Start reward display
+                    focus_reward_active = True
+                    focus_reward_start_time = now
+                
+                # Draw positive feedback with focus timer (unless a reward is active)
+                if not focus_reward_active:
+                    focus_msg = f"Attention: Good focus - {continuous_focus_time:.1f}s"
+                    cv2.putText(display_frame, focus_msg, 
+                               (window_width // 3, 110), cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.7, (0, 255, 0), 2)
+                
+                # Show progress towards reward (unless a reward is active)
+                if continuous_focus_time > 0 and continuous_focus_time < FOCUS_REWARD_TIME_SEC and not focus_reward_active:
+                    progress_percent = continuous_focus_time / FOCUS_REWARD_TIME_SEC
+                    bar_width = 200
+                    filled_width = int(bar_width * progress_percent)
+                    
+                    # Draw reward progress bar (right side of screen)
+                    reward_bar_x = window_width - bar_width - 20
+                    reward_bar_y = 110
+                    
+                    # Background bar
+                    cv2.rectangle(display_frame, 
+                                 (reward_bar_x, reward_bar_y), 
+                                 (reward_bar_x + bar_width, reward_bar_y + 15), 
+                                 (100, 100, 100), -1)
+                    
+                    # Filled portion
+                    cv2.rectangle(display_frame, 
+                                 (reward_bar_x, reward_bar_y), 
+                                 (reward_bar_x + filled_width, reward_bar_y + 15), 
+                                 (0, 255, 0), -1)
+                    
+                    # Label
+                    cv2.putText(display_frame, "Focus Reward Progress", 
+                               (reward_bar_x, reward_bar_y - 5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            
+            # Display the focus reward animation if active
+            if focus_reward_active:
+                # Calculate animation progress
+                reward_time = now - focus_reward_start_time
+                
+                # Create pulsing effect
+                pulse_intensity = 0.5 + 0.5 * np.sin(reward_time * 5.0)
+                
+                # Full-screen green glow with pulsing opacity
+                overlay = display_frame.copy()
+                cv2.rectangle(overlay, (0, 0), (window_width, window_height), 
+                             (0, 255, 0), -1)  # Green fill
+                
+                # Apply with varying opacity
+                alpha = 0.15 + 0.15 * pulse_intensity  # Vary between 15-30% opacity
+                cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
+                
+                # Draw a more pronounced border that pulses
+                border_thickness = int(5 + 15 * pulse_intensity)  # Varies between 5-20px
+                cv2.rectangle(display_frame, (0, 0), (window_width, window_height), 
+                             (0, 255, 0), border_thickness)
+                
+                # Create large congratulatory message
+                # Main box with semi-transparent background
+                text_box_width = int(window_width * 0.7)
+                text_box_height = int(window_height * 0.4)
+                text_box_x = (window_width - text_box_width) // 2
+                text_box_y = (window_height - text_box_height) // 2
+                
+                # Semi-transparent background
+                box_overlay = display_frame.copy()
+                cv2.rectangle(box_overlay, 
+                             (text_box_x, text_box_y),
+                             (text_box_x + text_box_width, text_box_y + text_box_height),
+                             (0, 100, 0), -1)
+                cv2.addWeighted(box_overlay, 0.7, display_frame, 0.3, 0, display_frame)
+                
+                # Border for the box
+                cv2.rectangle(display_frame, 
+                             (text_box_x, text_box_y),
+                             (text_box_x + text_box_width, text_box_y + text_box_height),
+                             (0, 255, 0), 5)
+                
+                # Main congratulatory text with multiple effects for visibility
+                # 1. Shadow/outline effect
+                congratulation_text = "GREAT FOCUS!"
+                text_x = text_box_x + text_box_width // 2 - 200
+                text_y = text_box_y + 100
+                
+                # Shadow for text (black outline)
+                cv2.putText(display_frame, congratulation_text, 
+                           (text_x-2, text_y-2), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 0), 7)
+                
+                # Main text with color based on pulse
+                green_intensity = 155 + int(100 * pulse_intensity)  # 155-255
+                text_color = (0, green_intensity, 0)
+                cv2.putText(display_frame, congratulation_text, 
+                           (text_x, text_y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 2.5, text_color, 5)
+                
+                # Secondary message
+                cv2.putText(display_frame, "You maintained focus for over 10 seconds!", 
+                           (text_box_x + 50, text_box_y + 200), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+                
+                # Countdown showing how long the reward screen will remain visible
+                time_left = FOCUS_REWARD_DISPLAY_DURATION - reward_time
+                cv2.putText(display_frame, f"Reward ends in: {time_left:.1f}s", 
+                           (text_box_x + 50, text_box_y + 250), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 255, 200), 2)
+                
+                # Show confetti-like effects
+                for i in range(20):
+                    x = np.random.randint(0, window_width)
+                    y = np.random.randint(0, window_height)
+                    size = np.random.randint(5, 20)
+                    # Pick a random bright color
+                    color = (np.random.randint(0, 255), 
+                            np.random.randint(180, 255), 
+                            np.random.randint(0, 255))
+                    cv2.circle(display_frame, (x, y), size, color, -1)
             
             # Trigger attention alert if threshold reached and cooldown expired
-            now = time.time()
-            
             # Check if we need to deactivate an ongoing alert
             if attention_alert_active and (now - attention_alert_start_time >= ATTENTION_ALERT_DURATION):
                 attention_alert_active = False
@@ -751,7 +916,7 @@ def main():
                 
                 # Fill with current flash color
                 cv2.rectangle(overlay, (0, 0), (window_width, window_height), 
-                            flash_color, -1)
+                             flash_color, -1)
                 
                 # Apply varying opacity based on flash intensity
                 alpha = 0.2 + 0.3 * flash_intensity  # Opacity varies between 0.2-0.5
@@ -760,7 +925,7 @@ def main():
                 # Add border that pulses in thickness
                 border_thickness = int(5 + 15 * flash_intensity)  # Thickness varies between 5-20px
                 cv2.rectangle(display_frame, (0, 0), (window_width, window_height), 
-                            flash_color, border_thickness)
+                             flash_color, border_thickness)
                 
                 # 3. Create a prominent text box in the center that moves slightly
                 text_box_width = window_width - 100
@@ -776,13 +941,13 @@ def main():
                 
                 # Draw semi-transparent black background for text
                 cv2.rectangle(display_frame, 
-                            (text_box_x, text_box_y),
-                            (text_box_x + text_box_width, text_box_y + text_box_height),
-                            (0, 0, 0), -1)
+                             (text_box_x, text_box_y),
+                             (text_box_x + text_box_width, text_box_y + text_box_height),
+                             (0, 0, 0), -1)
                 cv2.rectangle(display_frame, 
-                            (text_box_x, text_box_y),
-                            (text_box_x + text_box_width, text_box_y + text_box_height),
-                            flash_color, 5)  # Border uses flash color
+                             (text_box_x, text_box_y),
+                             (text_box_x + text_box_width, text_box_y + text_box_height),
+                             flash_color, 5)  # Border uses flash color
                 
                 # 4. Flashing text for maximum effect - alternate size and intensity
                 text_size = 1.6 + 0.4 * flash_intensity  # Size varies between 1.6-2.0
@@ -814,7 +979,7 @@ def main():
                         (window_width // 2 - 150 + jitter_x, window_height // 2 + 100 + jitter_y), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
             
-            # Draw attention status bar
+            # Draw attention status bar (for attention loss)
             attention_bar_width = 200
             attention_bar_height = 20
             bar_x = window_width - attention_bar_width - 20
@@ -1118,10 +1283,14 @@ def main():
         # --- Handle Key Presses ---
         key = cv2.waitKey(1) & 0xFF
 
-        # Check if attention alert is active and any key pressed to dismiss it
-        if attention_alert_active and key != 255:  # 255 means no key pressed
-            attention_alert_active = False
-            print("Attention alert dismissed by user.")
+        # Check if attention alert or focus reward is active and any key pressed to dismiss it
+        if key != 255:  # 255 means no key pressed
+            if attention_alert_active:
+                attention_alert_active = False
+                print("Attention alert dismissed by user.")
+            if focus_reward_active:
+                focus_reward_active = False
+                print("Focus reward dismissed by user.")
 
         if key == ord('q'):
             print("Quitting...")
