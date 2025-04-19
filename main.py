@@ -218,10 +218,6 @@ def main():
             frame_height = 480
         else:
             print("Camera opened successfully!")
-            # Create separate window for webcam feed
-            cv2.namedWindow("Eye Tracking Feed", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("Eye Tracking Feed", 320, 240)
-            
     except Exception as e:
         print(f"Error initializing webcam: {e}")
         print("Please check camera permissions in System Settings.")
@@ -246,15 +242,6 @@ def main():
         # Timing for FPS calculation
         frame_start_time = time.time()
         
-        # Initialize variables for current frame
-        detected_pupils = []  # Store pupil data for this frame
-        left_eye_detected = False
-        right_eye_detected = False
-        face_center = None
-        avg_gaze_offset = None  # Initialize to prevent UnboundLocalError
-        both_eyes_open = False  # Initialize eye status
-        fps = 0.0  # Initialize fps to prevent UnboundLocalError
-
         # Create a blank canvas for our window
         display_frame = np.zeros((window_height, window_width, 3), dtype=np.uint8)
         
@@ -328,218 +315,43 @@ def main():
         webcam_height, webcam_width = frame.shape[:2]
         
         # Resize webcam frame to fit in the corner without covering important text
-        max_webcam_width = window_width // 3  # Increased size (1/3 of window width)
-        max_webcam_height = window_height // 3  # Increased size (1/3 of window height)
+        max_webcam_width = window_width // 4  # Smaller size (1/4 of window width)
+        max_webcam_height = window_height // 4  # Smaller size (1/4 of window height)
         
         # Calculate scale factor to maintain aspect ratio
         scale_factor = min(max_webcam_width / webcam_width, max_webcam_height / webcam_height)
         
-        # Calculate new dimensions - use integer division to ensure exact matching later
-        new_width = int(max_webcam_width * 0.85)  # Use 85% of sidebar width to avoid broadcast errors
-        new_height = int(webcam_height * (new_width / webcam_width))  # Calculate height to maintain aspect ratio
+        # Calculate new dimensions
+        new_width = int(webcam_width * scale_factor)
+        new_height = int(webcam_height * scale_factor)
         
-        # Ensure dimensions are even numbers to prevent broadcast errors
-        new_width = new_width - (new_width % 2)  # Make width even
-        new_height = new_height - (new_height % 2)  # Make height even
-        
-        # Resize webcam frame - ensure exact size to prevent mismatches later
-        webcam_resized = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        # Resize webcam frame
+        webcam_resized = cv2.resize(frame, (new_width, new_height))
         
         # Create a copy of the webcam frame for visualization
         webcam_visual = webcam_resized.copy()
         
-        # Calculate sidebar position and size
-        sidebar_width = int(window_width * 0.28)  # 28% of window width for sidebar
-        sidebar_x = window_width - sidebar_width
-        
-        # Recalculate webcam placement in sidebar with integer division
-        # This ensures whole number dimensions to prevent shape mismatches
-        webcam_x = sidebar_x + (sidebar_width - new_width) // 2  # Center in sidebar
-        webcam_y = 50  # Give space for title
-        
-        # Create sidebar area with dark background
-        cv2.rectangle(display_frame, 
-                     (sidebar_x, 0), 
-                     (window_width, window_height), 
-                     (30, 30, 30), -1)
-        
-        # Draw a separator line
-        cv2.line(display_frame, 
-                (sidebar_x, 0), 
-                (sidebar_x, window_height), 
-                (100, 100, 100), 2)
-        
-        # Draw title for sidebar
-        cv2.putText(display_frame, "Eye Tracking Data", 
-                   (sidebar_x + 10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-        
-        # Draw webcam feed on sidebar
+        # Position in bottom-left corner with margin to avoid calibration dots
+        webcam_x = 10
+        webcam_y = window_height - new_height - 10
+
         # Create background for webcam area
         cv2.rectangle(display_frame, 
-                     (webcam_x-3, webcam_y-3), 
-                     (webcam_x+new_width+3, webcam_y+new_height+3), 
+                     (webcam_x-1, webcam_y-1), 
+                     (webcam_x+new_width+1, webcam_y+new_height+1), 
                      (40, 40, 40), -1)
         
         # Draw border around the webcam feed
         cv2.rectangle(display_frame, 
-                     (webcam_x-3, webcam_y-3), 
-                     (webcam_x+new_width+3, webcam_y+new_height+3), 
-                     (100, 100, 100), 1)
+                     (webcam_x-1, webcam_y-1), 
+                     (webcam_x+new_width+1, webcam_y+new_height+1), 
+                     (255, 255, 255), 1)
         
         # Add title above webcam
-        cv2.putText(display_frame, "Camera Feed", 
-                   (sidebar_x + 10, webcam_y-5), 
+        cv2.putText(display_frame, "Eye Tracking Feed", 
+                   (webcam_x, webcam_y-5), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        
-        # Close the separate window if it exists
-        try:
-            cv2.destroyWindow("Eye Tracking Feed")
-        except:
-            pass
-        
-        # Draw face, eye, and pupil detection information on webcam view
-        if current_mode != MODE_SIMULATED:
-            # Always display the webcam feed in the sidebar
-            try:
-                # Always resize to ensure exact dimensions match 
-                webcam_visual = cv2.resize(webcam_visual, (new_width, new_height), interpolation=cv2.INTER_AREA)
-                
-                # Place directly into display frame
-                display_frame[webcam_y:webcam_y+new_height, webcam_x:webcam_x+new_width] = webcam_visual
-            except Exception as e:
-                print(f"Camera error: {e}")
-                # Draw fallback if camera fails
-                cv2.rectangle(display_frame, 
-                             (webcam_x, webcam_y), 
-                             (webcam_x+new_width, webcam_y+new_height), 
-                             (0, 0, 100), -1)
-                cv2.putText(display_frame, "Camera Error", 
-                           (webcam_x+10, webcam_y+new_height//2), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        else:
-            # For simulated mode, draw the feed
-            try:
-                # Resize simulated feed to exact dimensions
-                simulated_feed = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
-                
-                # Place directly into display frame
-                display_frame[webcam_y:webcam_y+new_height, webcam_x:webcam_x+new_width] = simulated_feed
-            except Exception as e:
-                print(f"Error displaying simulated feed: {e}")
-                # Fallback
-                cv2.rectangle(display_frame, 
-                             (webcam_x, webcam_y), 
-                             (webcam_x+new_width, webcam_y+new_height), 
-                             (0, 0, 100), -1)
-                cv2.putText(display_frame, "Simulation Error", 
-                           (webcam_x+10, webcam_y+new_height//2), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        # Add tracking data below webcam with visual enhancements
-        data_y = webcam_y + new_height + 30  # Start below webcam
-        line_height = 25  # Space between lines
-        
-        # Create background for data area
-        data_section_height = 250  # Increased height
-        cv2.rectangle(display_frame, 
-                     (sidebar_x+5, data_y-20), 
-                     (window_width-5, data_y+data_section_height), 
-                     (40, 40, 40), -1)
-                     
-        # Section title
-        cv2.putText(display_frame, "Tracking Stats", 
-                   (sidebar_x+10, data_y), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-        
-        # Add tracking data with better formatting
-        if avg_gaze_offset:
-            # Label
-            cv2.putText(display_frame, "Gaze Offset:", 
-                       (sidebar_x+15, data_y+line_height*1), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-            # Values
-            cv2.putText(display_frame, f"X: {avg_gaze_offset[0]:.1f}", 
-                       (sidebar_x+25, data_y+line_height*2), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 150), 1)
-            cv2.putText(display_frame, f"Y: {avg_gaze_offset[1]:.1f}", 
-                       (sidebar_x+105, data_y+line_height*2), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 150), 1)
-        
-        # Add eye status with color-coded indicators
-        cv2.putText(display_frame, "Eye Status:", 
-                   (sidebar_x+15, data_y+line_height*3), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        
-        # Draw eye status indicators
-        left_status_color = (0, 255, 0) if left_eye_detected else (0, 0, 255)
-        right_status_color = (0, 255, 0) if right_eye_detected else (0, 0, 255)
-        
-        cv2.putText(display_frame, "Left Eye:", 
-                   (sidebar_x+25, data_y+line_height*4), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.circle(display_frame, 
-                  (sidebar_x+95, int(data_y+line_height*4-5)), 
-                  5, left_status_color, -1)
-                  
-        cv2.putText(display_frame, "Right Eye:", 
-                   (sidebar_x+115, data_y+line_height*4), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.circle(display_frame, 
-                  (sidebar_x+190, int(data_y+line_height*4-5)), 
-                  5, right_status_color, -1)
-        
-        # Show wink detection stats with progress bars
-        cv2.putText(display_frame, "Wink Detection:", 
-                   (sidebar_x+15, data_y+line_height*5), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        
-        # Left wink progress bar
-        left_progress = min(1.0, left_eye_closed_frames / WINK_FRAMES_THRESHOLD)
-        bar_width = 60
-        cv2.putText(display_frame, "Left:", 
-                   (sidebar_x+25, data_y+line_height*6), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.rectangle(display_frame, 
-                     (sidebar_x+65, int(data_y+line_height*6-10)), 
-                     (sidebar_x+65+bar_width, int(data_y+line_height*6-2)), 
-                     (100, 100, 100), 1)
-        cv2.rectangle(display_frame, 
-                     (sidebar_x+65, int(data_y+line_height*6-10)), 
-                     (sidebar_x+65+int(bar_width*left_progress), int(data_y+line_height*6-2)), 
-                     (150, 150, 255), -1)
-        
-        # Right wink progress bar
-        right_progress = min(1.0, right_eye_closed_frames / WINK_FRAMES_THRESHOLD)
-        cv2.putText(display_frame, "Right:", 
-                   (sidebar_x+135, data_y+line_height*6), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.rectangle(display_frame, 
-                     (sidebar_x+175, int(data_y+line_height*6-10)), 
-                     (sidebar_x+175+bar_width, int(data_y+line_height*6-2)), 
-                     (100, 100, 100), 1)
-        cv2.rectangle(display_frame, 
-                     (sidebar_x+175, int(data_y+line_height*6-10)), 
-                     (sidebar_x+175+int(bar_width*right_progress), int(data_y+line_height*6-2)), 
-                     (150, 150, 255), -1)
-        
-        # Add FPS at bottom of sidebar with better styling
-        fps_text = f"FPS: {fps:.1f}"
-        # Create background for FPS
-        cv2.rectangle(display_frame, 
-                     (sidebar_x+5, window_height-60), 
-                     (window_width-5, window_height-5), 
-                     (40, 40, 40), -1)
-        cv2.putText(display_frame, fps_text, 
-                   (sidebar_x+15, window_height-15), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-        
-        # Add current mode to sidebar
-        mode_text = f"Mode: {'DETECTING' if current_mode == MODE_DETECTING else ('CALIBRATING' if current_mode == MODE_CALIBRATING else ('RECORDING' if current_mode == MODE_CALIBRATING_RECORDING else 'CONTROLLING'))}"
-        cv2.putText(display_frame, mode_text, 
-                   (sidebar_x+15, window_height-35), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 100), 1)
-        
+
         # Convert frame to grayscale for detection
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
@@ -547,6 +359,12 @@ def main():
         faces = face_cascade.detectMultiScale(
             gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(90, 90)
         )
+
+        # Initialize variables for current frame
+        detected_pupils = []  # Store pupil data for this frame
+        left_eye_detected = False
+        right_eye_detected = False
+        face_center = None
 
         if len(faces) > 0:
             # Use the largest face (assuming it's the user)
@@ -695,6 +513,7 @@ def main():
         both_eyes_previously_open = both_eyes_open
         
         # --- Calculate Average Gaze Offset ---
+        avg_gaze_offset = None
         if len(detected_pupils) > 0:
             avg_offset_x = sum(p['offset'][0] for p in detected_pupils) / len(detected_pupils)
             avg_offset_y = sum(p['offset'][1] for p in detected_pupils) / len(detected_pupils)
@@ -974,6 +793,9 @@ def main():
         # Show smoothing information
         cv2.putText(display_frame, f"Smoothing: {GAZE_SMOOTHING_BUFFER_SIZE} frames, Deadzone: {GAZE_DEADZONE}px", 
                    (10, window_height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+        # Update the webcam with pupil detection information in the display frame
+        display_frame[webcam_y:webcam_y+new_height, webcam_x:webcam_x+new_width] = webcam_visual
 
         # Display the resulting frame
         cv2.imshow('Eye Tracking', display_frame)
