@@ -145,6 +145,12 @@ def main():
     # Create a larger window for the application
     window_width, window_height = 1024, 768  # Adjustable window size
     
+    # Define webcam panel size and position
+    webcam_x = 20  # Position in the bottom-left corner
+    webcam_y = window_height - 220
+    new_width = 320  # Small preview size
+    new_height = 200
+    
     # --------------------
 
     # --- Initialize Audio ---
@@ -420,50 +426,37 @@ def main():
         # Flip frame horizontally
         frame = cv2.flip(frame, 1)
         
-        # Calculate the webcam frame size for embedding in our display
+        # Get the original webcam dimensions
         webcam_height, webcam_width = frame.shape[:2]
-        
-        # Resize webcam frame to fit in the corner without covering important text
-        max_webcam_width = window_width // 4  # Smaller size (1/4 of window width)
-        max_webcam_height = window_height // 4  # Smaller size (1/4 of window height)
-        
-        # Calculate scale factor to maintain aspect ratio
-        scale_factor = min(max_webcam_width / webcam_width, max_webcam_height / webcam_height)
-        
-        # Calculate new dimensions
-        new_width = int(webcam_width * scale_factor)
-        new_height = int(webcam_height * scale_factor)
-        
-        # Resize webcam frame
-        webcam_resized = cv2.resize(frame, (new_width, new_height))
-        
-        # Create a copy of the webcam frame for visualization
-        webcam_visual = webcam_resized.copy()
-        
-        # Position in bottom-left corner with margin to avoid calibration dots
-        webcam_x = 10
-        webcam_y = window_height - new_height - 10
 
-        # Create background for webcam area
-        cv2.rectangle(display_frame, 
-                     (webcam_x-1, webcam_y-1), 
-                     (webcam_x+new_width+1, webcam_y+new_height+1), 
-                     (40, 40, 40), -1)
-        
-        # Draw border around the webcam feed
-        cv2.rectangle(display_frame, 
-                     (webcam_x-1, webcam_y-1), 
-                     (webcam_x+new_width+1, webcam_y+new_height+1), 
-                     (255, 255, 255), 1)
-        
-        # Add title above webcam
-        cv2.putText(display_frame, "Eye Tracking Feed", 
-                   (webcam_x, webcam_y-5), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        # Maintain aspect ratio when resizing
+        # Calculate the scaling factor for fitting the frame without stretching
+        webcam_aspect = webcam_width / webcam_height
+        window_aspect = window_width / window_height
 
+        if webcam_aspect > window_aspect:
+            # If webcam is wider than window, fit to width
+            new_w = window_width
+            new_h = int(new_w / webcam_aspect)
+            top_margin = (window_height - new_h) // 2
+            display_frame[top_margin:top_margin+new_h, 0:window_width] = cv2.resize(frame, (new_w, new_h))
+        else:
+            # If webcam is taller than window, fit to height
+            new_h = window_height
+            new_w = int(new_h * webcam_aspect)
+            left_margin = (window_width - new_w) // 2
+            display_frame[0:window_height, left_margin:left_margin+new_w] = cv2.resize(frame, (new_w, new_h))
+
+        # Create a copy of the display frame for processing
+        webcam_visual = display_frame.copy()
+
+        # Calculate the scale factor for translating coordinates
+        scale_factor_x = window_width / webcam_width
+        scale_factor_y = window_height / webcam_height
+        
         # Convert frame to grayscale for detection
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
+
         # --- Face Detection ---
         faces = face_cascade.detectMultiScale(
             gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(90, 90)
@@ -482,8 +475,8 @@ def main():
             
             # Draw rectangle around face (on the webcam image for reference)
             cv2.rectangle(webcam_visual, 
-                         (int(x * scale_factor), int(y * scale_factor)), 
-                         (int((x + w) * scale_factor), int((y + h) * scale_factor)), 
+                         (int(x * scale_factor_x), int(y * scale_factor_y)), 
+                         (int((x + w) * scale_factor_x), int((y + h) * scale_factor_y)), 
                          (255, 0, 0), 2)
             
             # Extract face region of interest (ROI)
@@ -513,10 +506,10 @@ def main():
                 eye_w, eye_h = ew, eh
                 
                 # Draw rectangle around the eye (on the webcam image)
-                scaled_eye_x = int(eye_x_abs * scale_factor)
-                scaled_eye_y = int(eye_y_abs * scale_factor)
-                scaled_eye_w = int(eye_w * scale_factor)
-                scaled_eye_h = int(eye_h * scale_factor)
+                scaled_eye_x = int(eye_x_abs * scale_factor_x)
+                scaled_eye_y = int(eye_y_abs * scale_factor_y)
+                scaled_eye_w = int(eye_w * scale_factor_x)
+                scaled_eye_h = int(eye_h * scale_factor_y)
                 
                 # Draw eye status label
                 eye_label = "LEFT" if is_left_eye else "RIGHT"
@@ -548,8 +541,8 @@ def main():
                     pupil_y_abs = eye_y_abs + pupil_y_rel
                     
                     # Draw pupil center (on the webcam image)
-                    scaled_pupil_x = int(pupil_x_abs * scale_factor)
-                    scaled_pupil_y = int(pupil_y_abs * scale_factor)
+                    scaled_pupil_x = int(pupil_x_abs * scale_factor_x)
+                    scaled_pupil_y = int(pupil_y_abs * scale_factor_y)
                     
                     # Draw pupil with more visibility
                     cv2.circle(webcam_visual, (scaled_pupil_x, scaled_pupil_y), 3, (0, 0, 255), -1)
@@ -564,7 +557,7 @@ def main():
                     if pupil_contour is not None:
                         try:
                             # Scale contour to display size
-                            scaled_contour = pupil_contour.copy() * scale_factor
+                            scaled_contour = pupil_contour.copy() * scale_factor_x  # Using x scale for simplicity
                             scaled_contour = scaled_contour.astype(np.int32)
                             
                             # Shift contour to the eye's position
@@ -594,6 +587,9 @@ def main():
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
                 
                 processed_eyes += 1
+                
+        # Update display frame with visual markers
+        display_frame = webcam_visual
 
         # --- Improved Wink Detection Logic ---
         # Track if both eyes are currently visible
@@ -1385,9 +1381,6 @@ def main():
         # Show smoothing information
         cv2.putText(display_frame, f"Smoothing: {GAZE_SMOOTHING_BUFFER_SIZE} frames, Deadzone: {GAZE_DEADZONE}px", 
                    (10, window_height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-
-        # Update the webcam with pupil detection information in the display frame
-        display_frame[webcam_y:webcam_y+new_height, webcam_x:webcam_x+new_width] = webcam_visual
 
         # Display the resulting frame
         cv2.imshow('Eye Tracking', display_frame)
