@@ -104,38 +104,63 @@ def find_pupil(eye_roi_gray):
     return pupil_center, pupil_contour
 
 # --- Gaze to Window Mapping Function ---
-def map_gaze_to_window(gaze_offset, calibration_data, window_width, window_height):
-    """Maps relative gaze offset to window coordinates based on calibration."""
-    # Simple linear interpolation/scaling based on calibration extrema
-    if not calibration_data or len(calibration_data) < 4:
-        # Return center of window if not calibrated
-        return window_width // 2, window_height // 2
-
-    offset_x, offset_y = gaze_offset
-
-    # Clamp offset to calibrated range to avoid going off-window drastically
-    offset_x = max(calibration_data['min_x'], min(calibration_data['max_x'], offset_x))
-    offset_y = max(calibration_data['min_y'], min(calibration_data['max_y'], offset_y))
-
-    # Interpolate X
-    cal_x_range = calibration_data['max_x'] - calibration_data['min_x']
-    if cal_x_range == 0:  # Avoid division by zero
-        window_x = window_width / 2
+def map_gaze_to_window(pupil_info, scale_factor_x, scale_factor_y, calibration_data=None):
+    """
+    Map the gaze offset to window coordinates based on calibration data.
+    If no calibration data is provided, it will use a simplified mapping.
+    """
+    if not pupil_info:
+        return None
+        
+    # Extract pupil information
+    offset_x, offset_y = pupil_info['offset']
+    is_left = pupil_info.get('is_left', True)  # Default to left eye if not specified
+    left_margin = pupil_info.get('margins', (0, 0))[0]
+    top_margin = pupil_info.get('margins', (0, 0))[1]
+    
+    # Calculate actual display area scale factors (excluding margins)
+    # This calculates the scale factor for the area where the webcam frame is actually displayed
+    # rather than the entire window
+    webcam_width, webcam_height = WEBCAM_WIDTH, WEBCAM_HEIGHT
+    webcam_aspect = webcam_width / webcam_height
+    window_aspect = WINDOW_WIDTH / WINDOW_HEIGHT
+    
+    if webcam_aspect > window_aspect:
+        # If webcam is wider than window, display area is window_width × new_h
+        new_w = WINDOW_WIDTH
+        new_h = int(new_w / webcam_aspect)
+        effective_scale_x = new_w / webcam_width
+        effective_scale_y = new_h / webcam_height
     else:
-        window_x = ((offset_x - calibration_data['min_x']) / cal_x_range) * window_width
-
-    # Interpolate Y
-    cal_y_range = calibration_data['max_y'] - calibration_data['min_y']
-    if cal_y_range == 0:  # Avoid division by zero
-        window_y = window_height / 2
+        # If webcam is taller than window, display area is new_w × window_height
+        new_h = WINDOW_HEIGHT
+        new_w = int(new_h * webcam_aspect)
+        effective_scale_x = new_w / webcam_width
+        effective_scale_y = new_h / webcam_height
+    
+    if calibration_data:
+        # Apply calibration-based mapping (if available in the future)
+        # This would use a more sophisticated approach with calibration points
+        pass
     else:
-        window_y = ((offset_y - calibration_data['min_y']) / cal_y_range) * window_height
-
-    # Ensure values stay within the window
-    window_x = max(CURSOR_RADIUS, min(window_width - CURSOR_RADIUS, window_x))
-    window_y = max(CURSOR_RADIUS, min(window_height - CURSOR_RADIUS, window_y))
-
-    return int(window_x), int(window_y)
+        # Basic mapping - scaled linear transformation
+        # The actual pupil coordinate in the display frame
+        pupil_abs_x, pupil_abs_y = pupil_info['pupil_abs']
+        
+        # Apply effective scaling and account for margins
+        scaled_x = pupil_abs_x * effective_scale_x + left_margin
+        scaled_y = pupil_abs_y * effective_scale_y + top_margin
+        
+        # Map to gaze coordinates with adjustments
+        # These magic numbers would be replaced by calibration
+        gaze_x = scaled_x + offset_x * (4.0 if is_left else 3.5)
+        gaze_y = scaled_y + offset_y * 3.5
+        
+        # Ensure coordinates are within screen bounds
+        gaze_x = max(0, min(WINDOW_WIDTH, gaze_x)) 
+        gaze_y = max(0, min(WINDOW_HEIGHT, gaze_y))
+        
+        return (int(gaze_x), int(gaze_y))
 
 def main():
     # --- Screen Setup ---
@@ -434,25 +459,35 @@ def main():
         webcam_aspect = webcam_width / webcam_height
         window_aspect = window_width / window_height
 
+        # Initialize margins to zero
+        top_margin = 0
+        left_margin = 0
+        actual_display_width = window_width
+        actual_display_height = window_height
+
         if webcam_aspect > window_aspect:
             # If webcam is wider than window, fit to width
             new_w = window_width
             new_h = int(new_w / webcam_aspect)
             top_margin = (window_height - new_h) // 2
             display_frame[top_margin:top_margin+new_h, 0:window_width] = cv2.resize(frame, (new_w, new_h))
+            actual_display_width = new_w
+            actual_display_height = new_h
         else:
             # If webcam is taller than window, fit to height
             new_h = window_height
             new_w = int(new_h * webcam_aspect)
             left_margin = (window_width - new_w) // 2
             display_frame[0:window_height, left_margin:left_margin+new_w] = cv2.resize(frame, (new_w, new_h))
+            actual_display_width = new_w
+            actual_display_height = new_h
 
         # Create a copy of the display frame for processing
         webcam_visual = display_frame.copy()
 
-        # Calculate the scale factor for translating coordinates
-        scale_factor_x = window_width / webcam_width
-        scale_factor_y = window_height / webcam_height
+        # Calculate the scale factor for translating coordinates based on actual display area
+        scale_factor_x = actual_display_width / webcam_width
+        scale_factor_y = actual_display_height / webcam_height
         
         # Convert frame to grayscale for detection
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -474,9 +509,9 @@ def main():
             face_center = (x + w // 2, y + h // 2)
             
             # Draw rectangle around face (on the webcam image for reference)
-            cv2.rectangle(webcam_visual, 
-                         (int(x * scale_factor_x), int(y * scale_factor_y)), 
-                         (int((x + w) * scale_factor_x), int((y + h) * scale_factor_y)), 
+            cv2.rectangle(display_frame, 
+                         (int(x * scale_factor_x) + left_margin, int(y * scale_factor_y) + top_margin), 
+                         (int((x + w) * scale_factor_x) + left_margin, int((y + h) * scale_factor_y) + top_margin), 
                          (255, 0, 0), 2)
             
             # Extract face region of interest (ROI)
@@ -506,18 +541,18 @@ def main():
                 eye_w, eye_h = ew, eh
                 
                 # Draw rectangle around the eye (on the webcam image)
-                scaled_eye_x = int(eye_x_abs * scale_factor_x)
-                scaled_eye_y = int(eye_y_abs * scale_factor_y)
+                scaled_eye_x = int(eye_x_abs * scale_factor_x) + left_margin
+                scaled_eye_y = int(eye_y_abs * scale_factor_y) + top_margin
                 scaled_eye_w = int(eye_w * scale_factor_x)
                 scaled_eye_h = int(eye_h * scale_factor_y)
                 
                 # Draw eye status label
                 eye_label = "LEFT" if is_left_eye else "RIGHT"
                 label_pos = (scaled_eye_x, scaled_eye_y - 5)
-                cv2.putText(webcam_visual, eye_label, label_pos, 
+                cv2.putText(display_frame, eye_label, label_pos, 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                 
-                cv2.rectangle(webcam_visual, 
+                cv2.rectangle(display_frame, 
                              (scaled_eye_x, scaled_eye_y), 
                              (scaled_eye_x + scaled_eye_w, scaled_eye_y + scaled_eye_h), 
                              (0, 255, 0), 1)
@@ -541,16 +576,16 @@ def main():
                     pupil_y_abs = eye_y_abs + pupil_y_rel
                     
                     # Draw pupil center (on the webcam image)
-                    scaled_pupil_x = int(pupil_x_abs * scale_factor_x)
-                    scaled_pupil_y = int(pupil_y_abs * scale_factor_y)
+                    scaled_pupil_x = int(pupil_x_abs * scale_factor_x) + left_margin
+                    scaled_pupil_y = int(pupil_y_abs * scale_factor_y) + top_margin
                     
                     # Draw pupil with more visibility
-                    cv2.circle(webcam_visual, (scaled_pupil_x, scaled_pupil_y), 3, (0, 0, 255), -1)
-                    cv2.circle(webcam_visual, (scaled_pupil_x, scaled_pupil_y), 5, (0, 0, 255), 1)
+                    cv2.circle(display_frame, (scaled_pupil_x, scaled_pupil_y), 3, (0, 0, 255), -1)
+                    cv2.circle(display_frame, (scaled_pupil_x, scaled_pupil_y), 5, (0, 0, 255), 1)
                     
                     # Display "PUPIL DETECTED" near the eye
                     pupil_text_pos = (scaled_eye_x, scaled_eye_y + scaled_eye_h + 15)
-                    cv2.putText(webcam_visual, "PUPIL OK", pupil_text_pos, 
+                    cv2.putText(display_frame, "PUPIL OK", pupil_text_pos, 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                     
                     # If we have the pupil contour, draw it on the eye image
@@ -560,11 +595,11 @@ def main():
                             scaled_contour = pupil_contour.copy() * scale_factor_x  # Using x scale for simplicity
                             scaled_contour = scaled_contour.astype(np.int32)
                             
-                            # Shift contour to the eye's position
+                            # Shift contour to the eye's position and account for margins
                             shifted_contour = scaled_contour + np.array([scaled_eye_x, scaled_eye_y])
                             
                             # Draw the contour
-                            cv2.drawContours(webcam_visual, [shifted_contour], -1, (0, 255, 255), 1)
+                            cv2.drawContours(display_frame, [shifted_contour], -1, (0, 255, 255), 1)
                         except Exception as e:
                             # Skip drawing contour if there's an error
                             pass
@@ -573,23 +608,24 @@ def main():
                     eye_center_x_abs = eye_x_abs + eye_w // 2
                     eye_center_y_abs = eye_y_abs + eye_h // 2
                     
-                    # Store pupil data
+                    # Store pupil data - include the margins in the pupil data for proper mapping
                     detected_pupils.append({
                         'pupil_abs': (pupil_x_abs, pupil_y_abs),
                         'eye_center_abs': (eye_center_x_abs, eye_center_y_abs),
                         'offset': (pupil_x_abs - eye_center_x_abs, pupil_y_abs - eye_center_y_abs),
-                        'is_left': is_left_eye
+                        'is_left': is_left_eye,
+                        'margins': (left_margin, top_margin)  # Store margins for later use
                     })
                 else:
                     # Display "NO PUPIL" message
                     pupil_text_pos = (scaled_eye_x, scaled_eye_y + scaled_eye_h + 15)
-                    cv2.putText(webcam_visual, "NO PUPIL", pupil_text_pos, 
+                    cv2.putText(display_frame, "NO PUPIL", pupil_text_pos, 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
                 
                 processed_eyes += 1
                 
         # Update display frame with visual markers
-        display_frame = webcam_visual
+        display_frame = display_frame
 
         # --- Improved Wink Detection Logic ---
         # Track if both eyes are currently visible
